@@ -10,68 +10,54 @@ DEFAULT_TAB = "기본"
 PLACEHOLDER_TEXT = "여기에 메모를 입력하세요..."
 
 
-def get_data_file_path() -> str:
-    """
-    Windows 배포(exe) 기준으로 안전한 사용자 데이터 경로:
-    %APPDATA%\\memo_jang\\memos.json
-    """
+def get_data_file_path() -> Path:
+    """Windows 배포(exe) 기준 사용자 데이터 경로 반환"""
     appdata = os.getenv("APPDATA")
-    if appdata:  # Windows
+    if appdata:
         base = Path(appdata) / "memo_jang"
-    else:  # 혹시 모를 fallback (리눅스/맥/환경변수 없음)
+    else:
         base = Path.home() / ".memo_jang"
-
-    base.mkdir(parents=True, exist_ok=True)
-    return str(base / "memos.json")
-
-
-SAVE_FILE = get_data_file_path()
+    return base / "memos.json"
 
 
 class MemoTabUI:
-    """한 개의 메모 탭 UI/로직(스택 + 목록)"""
+    """한 개의 메모 탭 UI/로직 (추가/수정 모드 지원)"""
 
     def __init__(self, parent, app, tab_name: str):
         self.app = app
         self.tab_name = tab_name
         self.frame = ttk.Frame(parent)
+        self.editing_index = None  # None이면 신규 작성, 정수면 해당 메모 수정 중
 
         top = ttk.Frame(self.frame)
         top.pack(fill="x", padx=6, pady=6)
 
-        ttk.Button(top, text="저장", command=self.push_memo).pack(side="left")
+        self.btn_save = ttk.Button(top, text="저장", command=self.save_memo)
+        self.btn_save.pack(side="left")
+
+        self.btn_cancel = ttk.Button(top, text="취소", command=self.reset_editor)
+        # 취소 버튼은 수정 모드일 때만 동적으로 노출
+
         ttk.Button(top, text="불러오기", command=self.load_selected_to_editor).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="삭제", command=self.delete_selected).pack(side="left", padx=(6, 0))
 
-        # 작성 Text (placeholder 포함)
+        # 작성 Text
         self.editor = tk.Text(self.frame, wrap="word", height=14, foreground="gray")
         self.editor.pack(fill="x", padx=6)
-
-        # 초기 placeholder
         self.editor.insert("1.0", PLACEHOLDER_TEXT)
 
-        def on_focus_in(_event):
-            if self.editor.get("1.0", "end-1c") == PLACEHOLDER_TEXT:
-                self.editor.delete("1.0", "end")
-                self.editor.config(foreground="black")
+        self.editor.bind("<FocusIn>", self._on_focus_in)
+        self.editor.bind("<FocusOut>", self._on_focus_out)
 
-        def on_focus_out(_event):
-            if not self.editor.get("1.0", "end-1c").strip():
-                self.editor.insert("1.0", PLACEHOLDER_TEXT)
-                self.editor.config(foreground="gray")
-
-        self.editor.bind("<FocusIn>", on_focus_in)
-        self.editor.bind("<FocusOut>", on_focus_out)
-
-        # 목록 + 스크롤
+        # 목록 헤더
         blank = ttk.Frame(self.frame)
         blank.pack(fill="x", padx=6, pady=(6, 0))
         ttk.Label(blank, text="해당 탭의 메모들").pack(anchor="w")
 
+        # 목록 + 스크롤바
         mid = ttk.Frame(self.frame)
         mid.pack(fill="both", expand=True, padx=6, pady=6)
 
-        # ✅ 다중 선택 삭제 지원
         self.listbox = tk.Listbox(mid, selectmode="extended")
         self.listbox.pack(side="left", fill="both", expand=True)
 
@@ -80,6 +66,15 @@ class MemoTabUI:
         self.listbox.config(yscrollcommand=sb.set)
 
         self.refresh()
+
+    def _on_focus_in(self, _event):
+        if self.editor.get("1.0", "end-1c") == PLACEHOLDER_TEXT:
+            self.editor.delete("1.0", "end")
+            self.editor.config(foreground="black")
+
+    def _on_focus_out(self, _event):
+        if not self.editor.get("1.0", "end-1c").strip():
+            self.reset_editor()
 
     def memos(self):
         return self.app.data["tabs"][self.tab_name]
@@ -90,27 +85,49 @@ class MemoTabUI:
             return ""
         return text
 
-    def push_memo(self):
+    def reset_editor(self):
+        """입력창을 비우고 placeholder 및 신규 작성 상태로 복구"""
+        self.editing_index = None
+        self.btn_save.config(text="저장")
+        self.btn_cancel.pack_forget()
+        self.editor.delete("1.0", "end")
+        self.editor.insert("1.0", PLACEHOLDER_TEXT)
+        self.editor.config(foreground="gray")
+
+    def save_memo(self):
         text = self.get_editor_text()
         if not text.strip():
             messagebox.showinfo("안내", "저장할 내용이 비어있습니다.")
             return
 
-        item = {
-            "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            "text": text
-        }
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-        self.memos().insert(0, item)
+        if self.editing_index is not None and self.editing_index < len(self.memos()):
+            # [수정 모드] 기존 메모 업데이트 (맨 위로 이동)
+            self.memos().pop(self.editing_index)
+            self.memos().insert(0, {"created_at": f"{now_str} (수정)", "text": text})
+        else:
+            # [신규 모드] 최상단 삽입
+            self.memos().insert(0, {"created_at": now_str, "text": text})
 
         self.app.save_data()
         self.refresh()
+        self.reset_editor()
 
-    def get_selected_index(self):
+    def load_selected_to_editor(self):
         indices = list(self.listbox.curselection())
         if not indices:
-            return None
-        return indices[0]
+            messagebox.showinfo("안내", "불러올 항목을 선택하세요.")
+            return
+
+        idx = indices[0]
+        self.editing_index = idx
+        self.btn_save.config(text="수정 완료")
+        self.btn_cancel.pack(side="left", padx=(6, 0))
+
+        self.editor.delete("1.0", "end")
+        self.editor.insert("1.0", self.memos()[idx]["text"])
+        self.editor.config(foreground="black")
 
     def delete_selected(self):
         indices = list(self.listbox.curselection())
@@ -118,7 +135,7 @@ class MemoTabUI:
             messagebox.showinfo("안내", "삭제할 항목을 선택하세요.")
             return
 
-        if not messagebox.askyesno("삭제", f"{len(indices)}개 메모를 삭제할까요?"):
+        if not messagebox.askyesno("삭제 확인", f"{len(indices)}개 메모를 삭제하시겠습니까?"):
             return
 
         for idx in sorted(indices, reverse=True):
@@ -126,16 +143,7 @@ class MemoTabUI:
 
         self.app.save_data()
         self.refresh()
-
-    def load_selected_to_editor(self):
-        idx = self.get_selected_index()
-        if idx is None:
-            messagebox.showinfo("안내", "불러올 항목을 선택하세요.")
-            return
-
-        self.editor.delete("1.0", "end")
-        self.editor.insert("1.0", self.memos()[idx]["text"])
-        self.editor.config(foreground="black")
+        self.reset_editor()
 
     def refresh(self):
         self.listbox.delete(0, "end")
@@ -155,7 +163,9 @@ class MemoJangApp:
         self.root.geometry("320x800+820+100")
         self.root.resizable(True, True)
 
+        self.save_file = get_data_file_path()
         self.data = self.load_data()
+
         if "tabs" not in self.data or not isinstance(self.data["tabs"], dict):
             self.data = {"tabs": {DEFAULT_TAB: []}}
         if DEFAULT_TAB not in self.data["tabs"]:
@@ -177,9 +187,7 @@ class MemoJangApp:
 
     def create_memo_tab(self, tab_name: str):
         tab_name = tab_name.strip()
-        if not tab_name:
-            return
-        if tab_name in self.tab_uis:
+        if not tab_name or tab_name in self.tab_uis:
             return
 
         self.data["tabs"].setdefault(tab_name, [])
@@ -206,6 +214,10 @@ class MemoJangApp:
             messagebox.showinfo("안내", f"'{DEFAULT_TAB}' 탭은 삭제할 수 없습니다.")
             return
         if tab_name not in self.tab_uis:
+            return
+
+        memo_count = len(self.data["tabs"].get(tab_name, []))
+        if not messagebox.askyesno("탭 삭제 확인", f"'{tab_name}' 탭을 삭제하시겠습니까?\n(포함된 메모 {memo_count}개도 함께 삭제됩니다)"):
             return
 
         frame = self.tab_uis[tab_name].frame
@@ -251,7 +263,7 @@ class MemoJangApp:
 
         path_info = ttk.Label(
             self.manage_tab,
-            text=f"데이터 저장 위치:\n{SAVE_FILE}",
+            text=f"데이터 저장 위치:\n{self.save_file}",
             wraplength=280
         )
         path_info.pack(fill="x", padx=6, pady=(0, 6))
@@ -295,17 +307,18 @@ class MemoJangApp:
         self.delete_memo_tab(name)
 
     def load_data(self):
-        if not os.path.exists(SAVE_FILE):
+        if not self.save_file.exists():
             return {"tabs": {DEFAULT_TAB: []}}
         try:
-            with open(SAVE_FILE, "r", encoding="utf-8") as f:
+            with open(self.save_file, "r", encoding="utf-8") as f:
                 return json.load(f)
         except Exception:
             return {"tabs": {DEFAULT_TAB: []}}
 
     def save_data(self):
         try:
-            with open(SAVE_FILE, "w", encoding="utf-8") as f:
+            self.save_file.parent.mkdir(parents=True, exist_ok=True)
+            with open(self.save_file, "w", encoding="utf-8") as f:
                 json.dump(self.data, f, ensure_ascii=False, indent=2)
         except Exception as e:
             messagebox.showerror("저장 오류", str(e))
