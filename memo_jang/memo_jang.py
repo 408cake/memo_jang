@@ -2,12 +2,22 @@ import tkinter as tk
 from tkinter import ttk, messagebox
 import json
 import os
+import sys
 from datetime import datetime
 from pathlib import Path
 
 APP_TITLE = "memo_jang"
 DEFAULT_TAB = "기본"
 PLACEHOLDER_TEXT = "여기에 메모를 입력하세요..."
+
+
+def get_resource_path(relative_path: str) -> Path:
+    """PyInstaller로 패키징된 exe 내부의 파일 경로 탐색"""
+    try:
+        base_path = Path(sys._MEIPASS)
+    except Exception:
+        base_path = Path(__file__).resolve().parent
+    return base_path / relative_path
 
 
 def get_data_file_path() -> Path:
@@ -27,7 +37,7 @@ class MemoTabUI:
         self.app = app
         self.tab_name = tab_name
         self.frame = ttk.Frame(parent)
-        self.editing_index = None  # None이면 신규 작성, 정수면 해당 메모 수정 중
+        self.editing_index = None
 
         top = ttk.Frame(self.frame)
         top.pack(fill="x", padx=6, pady=6)
@@ -36,12 +46,10 @@ class MemoTabUI:
         self.btn_save.pack(side="left")
 
         self.btn_cancel = ttk.Button(top, text="취소", command=self.reset_editor)
-        # 취소 버튼은 수정 모드일 때만 동적으로 노출
 
         ttk.Button(top, text="불러오기", command=self.load_selected_to_editor).pack(side="left", padx=(6, 0))
         ttk.Button(top, text="삭제", command=self.delete_selected).pack(side="left", padx=(6, 0))
 
-        # 작성 Text
         self.editor = tk.Text(self.frame, wrap="word", height=14, foreground="gray")
         self.editor.pack(fill="x", padx=6)
         self.editor.insert("1.0", PLACEHOLDER_TEXT)
@@ -49,12 +57,10 @@ class MemoTabUI:
         self.editor.bind("<FocusIn>", self._on_focus_in)
         self.editor.bind("<FocusOut>", self._on_focus_out)
 
-        # 목록 헤더
         blank = ttk.Frame(self.frame)
         blank.pack(fill="x", padx=6, pady=(6, 0))
         ttk.Label(blank, text="해당 탭의 메모들").pack(anchor="w")
 
-        # 목록 + 스크롤바
         mid = ttk.Frame(self.frame)
         mid.pack(fill="both", expand=True, padx=6, pady=6)
 
@@ -86,7 +92,6 @@ class MemoTabUI:
         return text
 
     def reset_editor(self):
-        """입력창을 비우고 placeholder 및 신규 작성 상태로 복구"""
         self.editing_index = None
         self.btn_save.config(text="저장")
         self.btn_cancel.pack_forget()
@@ -103,11 +108,9 @@ class MemoTabUI:
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
         if self.editing_index is not None and self.editing_index < len(self.memos()):
-            # [수정 모드] 기존 메모 업데이트 (맨 위로 이동)
             self.memos().pop(self.editing_index)
             self.memos().insert(0, {"created_at": f"{now_str} (수정)", "text": text})
         else:
-            # [신규 모드] 최상단 삽입
             self.memos().insert(0, {"created_at": now_str, "text": text})
 
         self.app.save_data()
@@ -162,6 +165,11 @@ class MemoJangApp:
         self.root.title(APP_TITLE)
         self.root.geometry("320x800+820+100")
         self.root.resizable(True, True)
+
+        # 아이콘 적용
+        icon_path = get_resource_path("memo_jang.ico")
+        if icon_path.exists():
+            self.root.iconbitmap(str(icon_path))
 
         self.save_file = get_data_file_path()
         self.data = self.load_data()
@@ -266,7 +274,7 @@ class MemoJangApp:
             text=f"데이터 저장 위치:\n{self.save_file}",
             wraplength=280
         )
-        path_info.pack(fill="x", padx=6, pady=(0, 6))
+        path_info.pack(fill="x", padx=6, pady=(0, 0))
 
         self.refresh_manage_list()
 
